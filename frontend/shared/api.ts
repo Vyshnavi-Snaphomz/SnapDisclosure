@@ -111,7 +111,7 @@ function getApiBase(): string {
 function getFlaskApiBase(): string {
   // Flask backend API base URL
   if (typeof window !== 'undefined') {
-    return (import.meta as any).env?.VITE_FLASK_API_BASE || "http://127.0.0.1:5000";
+    return (import.meta as any).env?.VITE_BACKEND_URL || "http://127.0.0.1:5000";
   }
   return "http://127.0.0.1:5000";
 }
