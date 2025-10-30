@@ -19,7 +19,16 @@ if not api_key:
 openai.api_key = api_key
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://snap-disclosure.vercel.app",
+            "http://localhost:5173"
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 
 def extract_text_from_pdf(file_bytes):
