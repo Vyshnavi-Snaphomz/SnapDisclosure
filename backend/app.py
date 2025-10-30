@@ -1,8 +1,10 @@
+
 import os
 import io
 import zipfile
 import logging
 from time import sleep
+import json
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -30,18 +32,13 @@ def extract_text_from_pdf(file_bytes):
         return ""
 
 
-def safe_openai_completion(prompt, model="gpt-4o-mini", retries=3):
-    """
-    Calls OpenAI ChatCompletion safely with retries on rate limits or API errors.
-    Returns the generated text.
-    """
+def safe_openai_completion(prompt, model="gpt-4o-mini", retries=5):
     for attempt in range(retries):
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                # max_tokens=max_tokens
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -50,59 +47,63 @@ def safe_openai_completion(prompt, model="gpt-4o-mini", retries=3):
     return "Failed to get response from OpenAI after retries."
 
 
-def generate_preview_summary(text_chunk):
+def summarize_document(text):
     """
-    Generates a very short preview 2-3 sentences and a one-line title.
+    Generates a document title and 3 summary points with details.
+    Returns: {"title": str, "points": list of 3 points}
     """
     prompt = f"""
 You are a professional document summarizer AI.
-Analyze the following text and create a **very concise, clear, short, easy-to-read preview**.
-Limit the output to **exactly 2-3 sentences** only.
-Generate a **one-line title** as well.
-Do NOT add extra details beyond the most important points.
+Analyze the following text and generate:
 
-Respond strictly in this format:
+1. A concise **document title** (5 words max)
+2. Exactly **3 key bullet points**.
+   For each point provide:
+     - A short **title** (2–5 words)
+     - A **summary** (1–2 lines)
+     - **Detailed explanation** (3–5 lines)
 
-Title: <one-line title>
-Preview: <2-3 sentences>
-
-Text:
-{text_chunk}
-"""
-
-    response_text = safe_openai_completion(prompt)
-
-    title = "Untitled Document"
-    preview = "Preview not available."
-
-    for line in response_text.splitlines():
-        if line.lower().startswith("title:"):
-            title = line.split(":", 1)[1].strip()
-        elif line.lower().startswith("preview:"):
-            preview = line.split(":", 1)[1].strip()
-
-    # print("preview: \n", preview)
-    
-    return {"title": title, "summary": preview}
-
-
-def summarize_detailed_with_openai(text):
-    prompt = f"""
-You are a helpful assistant that summarizes property documents.
-Summarize the following document text into 3 short, concise paragraphs.
-- Each paragraph should focus on key highlights like ownership, sales, taxes, mortgage, property features, and utilities.
-- Use plain text, no numbering or bullet points.
-- Keep it factual and easy to read.
+Respond strictly in this JSON format:
+{{
+  "title": "string",
+  "points": [
+    {{
+      "title": "string",
+      "summary": "string",
+      "details": "string"
+    }},
+    {{
+      "title": "string",
+      "summary": "string",
+      "details": "string"
+    }},
+    {{
+      "title": "string",
+      "summary": "string",
+      "details": "string"
+    }}
+  ]
+}}
 
 Document text:
 {text[:10000]}
 """
     response_text = safe_openai_completion(prompt)
-    # Split into paragraphs by double newline
-    paragraphs = [p.strip() for p in response_text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = ["No summary generated."]
-    return paragraphs[:3]
+
+    try:
+        data = json.loads(response_text)
+        if "title" in data and "points" in data and isinstance(data["points"], list):
+            return data
+    except Exception:
+        logging.warning(f"Failed to parse JSON, response: {response_text}")
+
+    # fallback if JSON parsing fails
+    return {
+        "title": "Untitled Document",
+        "points": [
+            {"title": "Point 1", "summary": "Summary may be incomplete.", "details": response_text}
+        ],
+    }
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -123,16 +124,20 @@ def upload_zip():
         else:
             text = data.decode("utf-8", errors="ignore")
 
-        preview_data = generate_preview_summary(text)
-        detailed = summarize_detailed_with_openai(text)
+        if not text.strip():
+            return {
+                "file_name": name,
+                "title": "Untitled Document",
+                "points": [
+                    {"title": "No content", "summary": "No text extracted.", "details": ""}
+                ],
+            }
 
-        # print("preview_data:", preview_data)
-
+        summary_data = summarize_document(text)
         return {
             "file_name": name,
-            "title": preview_data.get("title", "Untitled Document"),
-            "summary": preview_data.get("summary", ""),
-            "fullSummary": detailed
+            "title": summary_data.get("title", "Untitled Document"),
+            "points": summary_data.get("points", []),
         }
 
     # Handle ZIP files
@@ -150,5 +155,4 @@ def upload_zip():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=7860)
-
+    app.run(host="0.0.0.0", port=5000)

@@ -13,7 +13,7 @@ python-dotenv==1.0.1
 Werkzeug==3.0.4
 
 # --- AI Integrations ---
-openai==1.51.0
+openai==0.28
 
 # --- Utilities ---
 requests==2.32.3
