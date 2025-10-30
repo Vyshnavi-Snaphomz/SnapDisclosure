@@ -5,6 +5,7 @@ export interface SummaryPoint {
   details: string;
 }
 
+
 export interface FileInfo {
   file_name: string;
   title?: string;
