@@ -1,4 +1,3 @@
-
 import os
 import io
 import zipfile
@@ -25,6 +24,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 def extract_text_from_pdf(file_bytes):
+    """Extract text from a PDF (handles multi-page files)."""
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         return "\n".join([page.extract_text() or "" for page in reader.pages])
@@ -33,12 +33,13 @@ def extract_text_from_pdf(file_bytes):
 
 
 def safe_openai_completion(prompt, model="gpt-4o-mini", retries=5):
+    """Retry-safe OpenAI completion with backoff."""
     for attempt in range(retries):
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
+                temperature=0.3,
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -49,59 +50,66 @@ def safe_openai_completion(prompt, model="gpt-4o-mini", retries=5):
 
 def summarize_document(text):
     """
-    Generates a document title and 3 summary points with details.
-    Returns: {"title": str, "points": list of 3 points}
+    Summarizes a document and marks potential red flags.
+    Returns JSON with is_red_flag keys.
     """
     prompt = f"""
-You are a professional document summarizer AI.
-Analyze the following text and generate:
+You are an expert AI in real estate, finance, and legal risk assessment.
 
-1. A concise **document title** (5 words max)
-2. Exactly **3 key bullet points**.
-   For each point provide:
-     - A short **title** (2–5 words)
-     - A **summary** (1–2 lines)
-     - **Detailed explanation** (3–5 lines)
+Analyze the following document carefully and identify general findings and potential red flags.
 
-Respond strictly in this JSON format:
+Return JSON only in this format:
 {{
-  "title": "string",
+  "title": "Brief document title (<=5 words)",
   "points": [
     {{
-      "title": "string",
-      "summary": "string",
-      "details": "string"
+      "title": "Short key point title (3-6 words)",
+      "summary": "1-2 line summary of the main observation.",
+      "details": "3-6 lines elaborating on the finding — include why it matters, implications, and context.",
+      "is_red_flag": true or false
     }},
-    {{
-      "title": "string",
-      "summary": "string",
-      "details": "string"
-    }},
-    {{
-      "title": "string",
-      "summary": "string",
-      "details": "string"
-    }}
+    ...
   ]
 }}
 
+Guidelines:
+- Set "is_red_flag": true for critical issues, risks, defects, legal or financial concerns.
+- Focus on clarity and accuracy.
+- Return 4–6 points max.
+- Do not include markdown — only valid JSON.
+
 Document text:
-{text[:10000]}
+{text[:9000]}
 """
     response_text = safe_openai_completion(prompt)
 
     try:
-        data = json.loads(response_text)
-        if "title" in data and "points" in data and isinstance(data["points"], list):
-            return data
-    except Exception:
-        logging.warning(f"Failed to parse JSON, response: {response_text}")
+        # Remove code blocks if model outputs them
+        if response_text.startswith("```json"):
+            response_text = response_text[7:-3].strip()
+        elif response_text.startswith("```"):
+            response_text = response_text[3:-3].strip()
 
-    # fallback if JSON parsing fails
+        data = json.loads(response_text)
+        if "title" in data and isinstance(data.get("points"), list):
+            # Ensure every point has is_red_flag
+            for p in data["points"]:
+                if "is_red_flag" not in p:
+                    p["is_red_flag"] = False
+            return data
+    except Exception as e:
+        logging.warning(f"Failed to parse JSON: {e}. Raw response: {response_text}")
+
+    # fallback
     return {
         "title": "Untitled Document",
         "points": [
-            {"title": "Point 1", "summary": "Summary may be incomplete.", "details": response_text}
+            {
+                "title": "Parsing Error",
+                "summary": "Could not parse structured response.",
+                "details": response_text,
+                "is_red_flag": False,
+            }
         ],
     }
 
@@ -109,6 +117,7 @@ Document text:
 @app.route("/api/upload", methods=["POST"])
 def upload_zip():
     print("UPLOAD ROUTE HIT")
+
     if "file" not in request.files:
         return jsonify({"success": False, "error": "No file uploaded"}), 400
 
@@ -119,6 +128,7 @@ def upload_zip():
     results = []
 
     def process_file(name, data):
+        """Process PDF or text file."""
         if name.endswith(".pdf"):
             text = extract_text_from_pdf(data)
         else:
@@ -129,7 +139,12 @@ def upload_zip():
                 "file_name": name,
                 "title": "Untitled Document",
                 "points": [
-                    {"title": "No content", "summary": "No text extracted.", "details": ""}
+                    {
+                        "title": "No content",
+                        "summary": "No text extracted.",
+                        "details": "",
+                        "is_red_flag": False,
+                    }
                 ],
             }
 
@@ -140,7 +155,7 @@ def upload_zip():
             "points": summary_data.get("points", []),
         }
 
-    # Handle ZIP files
+    # Handle ZIP archives
     if zipfile.is_zipfile(io.BytesIO(file_bytes)):
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
             for name in z.namelist():
@@ -155,5 +170,4 @@ def upload_zip():
 
 
 if __name__ == "__main__":
-    # Hugging Face Spaces expect apps to listen on the port set by the PORT env var.
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 7860)))
